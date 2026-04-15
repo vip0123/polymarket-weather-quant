@@ -135,23 +135,25 @@ def main():
                           f"{len(ens_cache)} unique forecasts cached")
             if not ens or "error" in ens:
                 continue
-            # Apply per-city station offset to the threshold (equivalent to
-            # shifting our forecast). If offset=-1.8°C (oracle reads cooler),
-            # we effectively raise the threshold on our forecast scale.
+            # Apply per-city station offset for the MODEL CALL ONLY.
+            # CRITICAL: do NOT mutate q itself — the CSV must store the
+            # ORIGINAL Polymarket threshold for downstream market lookup.
+            # Bug 2026-04-15: previously q got reassigned to q_adj, causing
+            # CSV to store offset-adjusted threshold; manual market lookups
+            # then matched the wrong Polymarket market. Cost: $9.59 on LA.
             offset_c = get_offset_c(q["city"])
             if offset_c != 0:
                 offset_f = offset_c * 9 / 5
-                q_adj = dict(q)
-                if "threshold" in q_adj and q_adj["threshold"] is not None:
-                    # Oracle reads cooler → our forecast needs to be HIGHER than
-                    # raw threshold for YES to hit. So raise threshold by -offset.
-                    q_adj["threshold"] = q_adj["threshold"] - offset_f
-                if "threshold_low" in q_adj:
-                    q_adj["threshold_low"] = q_adj["threshold_low"] - offset_f
-                if "threshold_high" in q_adj:
-                    q_adj["threshold_high"] = q_adj["threshold_high"] - offset_f
-                q = q_adj
-            model_out = p_event_with_range(ens, q)
+                q_for_model = dict(q)
+                if "threshold" in q_for_model and q_for_model["threshold"] is not None:
+                    q_for_model["threshold"] = q_for_model["threshold"] - offset_f
+                if "threshold_low" in q_for_model:
+                    q_for_model["threshold_low"] = q_for_model["threshold_low"] - offset_f
+                if "threshold_high" in q_for_model:
+                    q_for_model["threshold_high"] = q_for_model["threshold_high"] - offset_f
+            else:
+                q_for_model = q
+            model_out = p_event_with_range(ens, q_for_model)
             if not model_out or model_out.get("p_event") is None:
                 continue
             forecast_ct += 1
@@ -165,7 +167,12 @@ def main():
                 "city": q["city"],
                 "metric": q["metric"],
                 "op": q.get("op"),
+                # `threshold` = ORIGINAL Polymarket threshold (for market lookup)
                 "threshold": q.get("threshold") or f"{q.get('threshold_low')}-{q.get('threshold_high')}",
+                # `threshold_effective_f` = offset-adjusted threshold (for our model)
+                "threshold_effective_f": q_for_model.get("threshold") or (
+                    f"{q_for_model.get('threshold_low')}-{q_for_model.get('threshold_high')}"
+                    if q_for_model.get('threshold_low') is not None else ""),
                 "our_p": round(model_out["p_event"], 3),
                 "market_p": yes_price,
                 "edge": round(edge, 3) if edge is not None else None,
