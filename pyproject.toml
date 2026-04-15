@@ -3,7 +3,7 @@ name = "poly-data"
 version = "0.1.0"
 description = "A comprehensive data pipeline for fetching, processing, and analyzing Polymarket trading data"
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [
     { name = "Warproxxx", email = "" }
@@ -22,6 +22,13 @@ dev = [
     "jupyter>=1.0.0",
     "notebook>=7.0.0",
     "ipykernel>=6.25.0",
+]
+dashboard = [
+    "py-clob-client>=0.34.6",
+    "python-dotenv>=1.2.2",
+    "streamlit>=1.32.0",
+    "web3>=6.0",
+    "websockets>=15.0.1",
 ]
 
 [build-system]

@@ -1,6 +1,32 @@
 markets.csv
 processed/
 goldsky/
+missing_markets.csv
+
+# Derived analysis dumps — huge, contain other users' wallet addresses
+signals/**/output/
+signals/**/*.csv
+!signals/**/*.example.csv
+
+# Wallet-specific runtime state (NEVER commit — contains trade history + wallet addresses)
+dashboard/runtime/
+dashboard/runtime/*
+weather/edge_table.csv
+weather/reconciled.csv
+weather/calibration.json
+!dashboard/runtime/.gitkeep
+!dashboard/runtime/*_config.example.json
+
+# Personal vault/notes
+polymarket-vault/
+.streamlit/
+
+# Agent + session state
+.claude/
+.obsidian/
+
+# Temp
+/tmp/*
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

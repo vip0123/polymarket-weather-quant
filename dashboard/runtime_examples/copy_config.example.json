@@ -1,0 +1,12 @@
+{
+  "followed_wallet": "0x1f66796b45581868376365aef54b51eb84184c8d",
+  "max_position_usd": 10000.0,
+  "max_open_positions": 30,
+  "max_daily_loss_usd": 500.0,
+  "max_slippage_bps": 0,
+  "scale": 0.30,
+  "enabled": false,
+  "dry_run": true,
+  "mirror_cooldown_s": 1,
+  "title_blocklist": []
+}

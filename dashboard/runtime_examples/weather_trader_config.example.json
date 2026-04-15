@@ -1,0 +1,14 @@
+{
+  "enabled": false,
+  "dry_run": true,
+  "edge_threshold": 0.15,
+  "min_liq_usd": 20.0,
+  "max_position_usd": 150.0,
+  "max_open_positions": 15,
+  "min_ask": 0.05,
+  "max_ask": 0.80,
+  "only_directional": true,
+  "kelly_cap": 0.25,
+  "allocation_usd": 1000.0,
+  "refresh_every_s": 600
+}
