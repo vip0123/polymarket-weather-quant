@@ -2,6 +2,13 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## ⚠️ READ FIRST IF YOU'RE TRADING
+
+If this session involves placing orders against a Polymarket wallet:
+**Read `PLAYBOOK.md` before you fire anything.** It captures the discipline rules, calibration patterns, and lessons learned from real P&L. Violations cost money.
+
+Also read `WEATHER_QUANT_README.md` for setup + architecture context.
+
 ## Commands
 
 Dependency management uses [UV](https://docs.astral.sh/uv/):
