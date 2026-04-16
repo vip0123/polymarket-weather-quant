@@ -1,28 +1,50 @@
 """Weather data sources.
 
-Open-Meteo ensemble is the main source — free, no auth, multi-model.
+Open-Meteo ensemble is the main source. If OPEN_METEO_API_KEY env var is set,
+use the customer-api host (paid tier — 100k req/day, no rate limit issues).
+Otherwise fall back to free public host.
+
 NOAA NWS API for US cities as cross-check.
 """
 from __future__ import annotations
 
+import os
 from datetime import date, datetime, timedelta
 from typing import Optional
 
 import requests
+from dotenv import load_dotenv
 
-OPEN_METEO_ENSEMBLE = "https://ensemble-api.open-meteo.com/v1/ensemble"
-OPEN_METEO_FORECAST = "https://api.open-meteo.com/v1/forecast"
+load_dotenv()
+
+API_KEY = os.environ.get("OPEN_METEO_API_KEY", "").strip()
+
+if API_KEY:
+    # Paid customer API — each endpoint has its own subdomain
+    OPEN_METEO_ENSEMBLE = "https://customer-ensemble-api.open-meteo.com/v1/ensemble"
+    OPEN_METEO_FORECAST = "https://customer-api.open-meteo.com/v1/forecast"
+    OPEN_METEO_ARCHIVE  = "https://customer-archive-api.open-meteo.com/v1/archive"
+else:
+    OPEN_METEO_ENSEMBLE = "https://ensemble-api.open-meteo.com/v1/ensemble"
+    OPEN_METEO_FORECAST = "https://api.open-meteo.com/v1/forecast"
+    OPEN_METEO_ARCHIVE  = "https://archive-api.open-meteo.com/v1/archive"
+
 NWS_POINTS = "https://api.weather.gov/points/{lat:.4f},{lon:.4f}"
-
-# Pick a handful of ECMWF+GFS+GEM ensemble members; add ICON for redundancy
 ENS_MODELS = "ecmwf_ifs025,gfs_seamless,icon_seamless,gem_global"
+
+
+def _with_key(params: dict) -> dict:
+    if API_KEY:
+        params = dict(params)
+        params["apikey"] = API_KEY
+    return params
 
 
 def fetch_open_meteo_ensemble(lat: float, lon: float,
                               start: date, end: date) -> dict | None:
     """Fetch hourly temp/precip from multiple models. Returns raw JSON."""
     try:
-        r = requests.get(OPEN_METEO_ENSEMBLE, params={
+        r = requests.get(OPEN_METEO_ENSEMBLE, params=_with_key({
             "latitude": lat, "longitude": lon,
             "hourly": "temperature_2m,precipitation,cloud_cover,wind_speed_10m",
             "models": ENS_MODELS,
@@ -31,7 +53,7 @@ def fetch_open_meteo_ensemble(lat: float, lon: float,
             "temperature_unit": "fahrenheit",
             "precipitation_unit": "inch",
             "timezone": "auto",
-        }, timeout=15)
+        }), timeout=15)
         r.raise_for_status()
         return r.json()
     except Exception as e:
@@ -42,7 +64,7 @@ def fetch_open_meteo_forecast(lat: float, lon: float,
                               start: date, end: date) -> dict | None:
     """Single-best-model forecast (default = blend). Includes daily max/min."""
     try:
-        r = requests.get(OPEN_METEO_FORECAST, params={
+        r = requests.get(OPEN_METEO_FORECAST, params=_with_key({
             "latitude": lat, "longitude": lon,
             "daily": "temperature_2m_max,temperature_2m_min,precipitation_sum,"
                      "precipitation_probability_max,wind_speed_10m_max",
@@ -52,7 +74,7 @@ def fetch_open_meteo_forecast(lat: float, lon: float,
             "temperature_unit": "fahrenheit",
             "precipitation_unit": "inch",
             "timezone": "auto",
-        }, timeout=15)
+        }), timeout=15)
         r.raise_for_status()
         return r.json()
     except Exception as e:

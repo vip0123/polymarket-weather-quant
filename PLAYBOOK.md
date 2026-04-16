@@ -62,12 +62,18 @@ After applying the station offset, the **forecast cushion** (distance from thres
 
 ---
 
-## Rule 4 — Capital velocity (no Apr+2 unless edge ≥40pp)
+## Rule 4 — Capital velocity (STRICT: day+1 priority)
 
-Prefer same-day or next-day resolutions. Locking $200 for 2-3 days is a real opportunity cost when fresh markets list daily.
+Day+2 bets lock cash for 48hr. Day+1 bets recycle in 24hr. At similar ROI per bet, day+1 is 2x better in compounded daily velocity. This rule was violated 2026-04-16 (3 of 4 fires on day+2) — don't repeat.
 
-**Allowed**: today, tomorrow, day-after with edge ≥40pp.  
-**Blocked**: ≥3 days out unless edge ≥50pp.
+**Priority order for new deployment:**
+1. **Day+1 (tomorrow)** with cushion ≥3°F post-offset — ALWAYS prefer, even if cushion is smaller than a day+2 alternative
+2. **Day+2** only if: (a) Day+1 has nothing passing filters, AND (b) edge ≥40pp OR cushion ≥6°F
+3. **Day+3+** only if edge ≥50pp
+
+**When Day+1 is saturated (every city already held):** HOLD CASH. Don't force day+2 fires just to deploy.
+
+The reasoning: locking $430 for 48hr at 35% ROI = ~17%/day velocity vs $430 for 24hr at 30% ROI = ~30%/day. The "better cushion" on day+2 loses the race when measured in daily compound terms.
 
 ---
 
@@ -182,6 +188,13 @@ Block the push if you see anything other than these safe addresses:
 6. **Seoul ≥21°C YES rip** (+$1,100): when 143/143 ensemble members agree, the market is wrong.
 7. **Capital velocity matters**: 2-day-out positions tie up cash that could rotate through 2 same-day trades.
 8. **Station offset varies by day**: -1.8°C one day, -1.0°C the next. Treat as a noisy estimate, not gospel.
+9. **Istanbul model is unreliable** (2026-04-15 loss, $60): fired Istanbul 12°C NO with forecast 17°C — came in at 12°C, 5°C colder. Istanbul Bosphorus microclimate not captured by global ensembles. **Rule: avoid Istanbul unless cushion ≥6°F post-offset AND multiple local sources corroborate.**
+10. **Chicago forecast surprise warm** (2026-04-15 loss, $44): fired 72-73°F bucket NO with forecast 68°F — came in inside the bucket. The "cold front" we priced in was partial. **Rule: for NO bucket bets on cold-front forecasts, require the cold front to already be established (not "arriving tomorrow"). If frontal passage is >12hrs before resolution, treat cushion as −1°F.**
+11. **London overnight low on bucket edge** (2026-04-15 loss, $30): fired 10°C low YES with forecast 50.27°F (right on bucket edge 49.1-50.9). Observed landed outside. **Rule: bucket YES requires forecast 0.5°F inside any edge, not just "within the bucket".**
+12. **Conviction-size discipline**: Seoul ≥21°C worked but nearly flipped to loss at the scale we pushed. When cushion is <2.5°F post-offset AFTER applying station correction, cap exposure at $150 per (city, date) regardless of how much the ensemble loves it.
+13. **Bucket depth matters more than edge**: won the +NYC 86-87°F bet ($47→$927) because depth was thin at $0.05 and retail literally mispriced. Always check if market maker is asleep on the particular bucket — if our_p >> market_p AND best_ask has <$100 depth, that's a real inefficiency, not noise.
+14. **Coastal cities need 5°F cushion, not 3°F** (2026-04-16 bleeding $450+): HK, Miami, Istanbul, SF all burned us on NO bucket bets at 3-4°F cushion. Tropical cities (HK, Singapore, Miami, Bangkok, Mumbai) have afternoon convective thermals that spike above forecast briefly. Cold marine cities (Istanbul, Seattle, SF) have inflow patterns ensembles miss. **Rule: for coastal city NO bucket bets, require post-offset cushion ≥5°F. For inland (Atlanta, Chicago, Denver, Paris, Madrid, Moscow, Beijing), 3°F still OK.**
+15. **Istanbul is uniquely bad** (2 losses in 2 days): Bosphorus creates unstable forecast patterns. **Skip Istanbul unless cushion >7°F.**
 
 ---
 

@@ -107,27 +107,39 @@ def load_edges(path: Path) -> list[dict]:
 
 def decide_side(row: dict, edge_threshold: float,
                  only_directional: bool = False,
-                 skip_today: bool = True) -> Optional[tuple]:
+                 skip_today: bool = True,
+                 max_days_out: int = 1,
+                 day2_plus_min_edge: float = 0.40) -> Optional[tuple]:
     """Return (side, target_ask_max, token_idx) or None.
 
-    only_directional: if True, only trade op in (>=, <=) not "in" buckets —
-    these are more robust to ensemble model precision limits.
-    skip_today: skip markets where target_date == today (intra-day drift risk).
+    Playbook Rule 4 (hardened 2026-04-16): prefer day+1 resolutions for capital
+    velocity. Day+2 only if edge ≥40pp. Day+3+ blocked entirely.
     """
-    from datetime import date
+    from datetime import date, timedelta
     try:
         our = float(row["our_p"])
         mkt = float(row["market_p"])
     except (ValueError, TypeError):
         return None
     if only_directional and row.get("op") not in (">=", "<="):
-        # Hard reject bucket ("in") and exact ("=") markets — only >= / <=
-        # are robust to our ensemble's 1-2°F imprecision.
         return None
     if row.get("op") == "in":
-        return None  # never fire on buckets, period
+        return None
     if skip_today and row.get("target_date") == date.today().isoformat():
         return None
+    # Enforce capital-velocity rule
+    td_str = row.get("target_date")
+    if td_str:
+        try:
+            td = date.fromisoformat(td_str)
+            days_out = (td - date.today()).days
+            delta_p = abs(our - mkt)
+            if days_out > max_days_out and delta_p < day2_plus_min_edge:
+                return None
+            if days_out > max_days_out + 1:  # day+3+ always blocked
+                return None
+        except Exception:
+            pass
     delta = our - mkt
     if abs(delta) < edge_threshold:
         return None
