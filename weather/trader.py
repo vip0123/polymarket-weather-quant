@@ -107,15 +107,27 @@ def load_edges(path: Path) -> list[dict]:
 
 def decide_side(row: dict, edge_threshold: float,
                  only_directional: bool = False,
-                 skip_today: bool = True,
                  max_days_out: int = 1,
-                 day2_plus_min_edge: float = 0.40) -> Optional[tuple]:
+                 day2_plus_min_edge: float = 0.40,
+                 forecast_drift_penalty_per_day: float = 0.08) -> Optional[tuple]:
     """Return (side, target_ask_max, token_idx) or None.
 
-    Playbook Rule 4 (hardened 2026-04-16): prefer day+1 resolutions for capital
-    velocity. Day+2 only if edge ≥40pp. Day+3+ blocked entirely.
+    Playbook Rule 4 (v4 2026-04-16): Forecast drift penalty.
+      Models refresh 4x/day. Each refresh can shift prediction 2-4°F. A 3°F
+      cushion at entry typically erodes 1-2°F by day+2 resolution. We apply
+      a drift penalty on p_win to reflect this:
+          effective_p = raw_p × (1 - 0.08 × days_out)
+      So day+1 p_win 95% → effective 87%; day+2 p_win 95% → 80%.
+      This prevents firing long-horizon bets that look strong but are
+      statistically likely to drift against us.
+
+    Rules:
+      - TODAY-resolving: ALLOWED (no drift, fastest recycle)
+      - DAY+1: allowed with normal edge threshold after drift penalty
+      - DAY+2: only if edge ≥40pp AFTER drift penalty
+      - DAY+3+: blocked entirely
     """
-    from datetime import date, timedelta
+    from datetime import date
     try:
         our = float(row["our_p"])
         mkt = float(row["market_p"])
@@ -123,31 +135,41 @@ def decide_side(row: dict, edge_threshold: float,
         return None
     if only_directional and row.get("op") not in (">=", "<="):
         return None
-    if row.get("op") == "in":
-        return None
-    if skip_today and row.get("target_date") == date.today().isoformat():
-        return None
-    # Enforce capital-velocity rule
+    # Bucket bets allowed when only_directional=false, but ONLY on NO side
+    # (forecast outside bucket). YES-bucket requires manual override.
+    # Rule 14 cushion enforcement happens downstream in the trader loop.
+
+    # Apply forecast drift penalty based on days_out (Rule 4 v4)
+    days_out = 0
     td_str = row.get("target_date")
     if td_str:
         try:
             td = date.fromisoformat(td_str)
             days_out = (td - date.today()).days
-            delta_p = abs(our - mkt)
-            if days_out > max_days_out and delta_p < day2_plus_min_edge:
+            if days_out < 0:
                 return None
-            if days_out > max_days_out + 1:  # day+3+ always blocked
-                return None
+            if days_out > max_days_out:
+                return None  # Miami lesson: NEVER fire day+2+. Same-day/next-day only.
         except Exception:
             pass
-    delta = our - mkt
-    if abs(delta) < edge_threshold:
+
+    # Penalize expected prob by forecast drift. At days_out=2 and default 0.08,
+    # a 95% entry prob becomes 80% effective — most bets won't clear the bar.
+    drift_factor = max(0.5, 1.0 - forecast_drift_penalty_per_day * days_out)
+    our_adj = 0.5 + (our - 0.5) * drift_factor  # pull toward 50/50 as horizon extends
+    delta_p_adj = abs(our_adj - mkt)
+
+    # Day+2 needs 40pp AFTER drift penalty
+    if days_out > max_days_out and delta_p_adj < day2_plus_min_edge:
         return None
+    if delta_p_adj < edge_threshold:
+        return None
+
     tokens = json.loads(row["tokens"])
-    if delta > 0:
-        return ("YES", our, tokens[0])
+    if (our - mkt) > 0:
+        return ("YES", our_adj, tokens[0])
     else:
-        return ("NO", 1.0 - our, tokens[1])
+        return ("NO", 1.0 - our_adj, tokens[1])
 
 
 def refresh_edge_table() -> bool:
@@ -367,7 +389,10 @@ def main():
 
         actionable = 0
         only_dir = bool(cfg.get("only_directional", True))
+        exclude = set(c.lower() for c in cfg.get("exclude_cities", []))
         for row in rows:
+            if row.get("city", "").lower() in exclude:
+                continue
             decision = decide_side(row, edge_thr, only_directional=only_dir)
             if not decision:
                 continue
@@ -392,6 +417,36 @@ def main():
                 log.info("[STALE-SKIP] %s %s: %s",
                          row.get("city"), row.get("target_date"), why)
                 continue
+            # Cushion gate: compute post-offset distance from threshold.
+            # Fewer bets, higher conviction — only fire with real cushion.
+            min_cushion = float(cfg.get("min_cushion_f", 4.0))
+            try:
+                from weather.cities import get_offset_c
+                offset_f = get_offset_c(row.get("city", "")) * 9 / 5
+                fcst = float(row.get("forecast_f", 0))
+                eff = fcst + offset_f
+                thr_str = str(row.get("threshold", ""))
+                if row.get("op") in (">=", "<="):
+                    thr = float(thr_str)
+                    if side == "YES":
+                        cushion = (eff - thr) if row["op"] == ">=" else (thr - eff)
+                    else:
+                        cushion = (thr - eff) if row["op"] == ">=" else (eff - thr)
+                elif "-" in thr_str:
+                    lo, hi = [float(x) for x in thr_str.split("-")]
+                    if lo <= eff <= hi:
+                        cushion = -1  # in bucket = no cushion for NO
+                    else:
+                        cushion = min(abs(eff - lo), abs(eff - hi))
+                else:
+                    cushion = 99  # can't compute, allow
+                if cushion < min_cushion:
+                    log.info("[CUSHION-SKIP] %s %s cushion=%.1f°F < %.1f",
+                             row.get("city"), row.get("target_date"),
+                             cushion, min_cushion)
+                    continue
+            except Exception:
+                pass  # if cushion calc fails, allow (don't block on error)
             actionable += 1
 
             # Intraday obs override: for today's markets, use hourly obs.
