@@ -153,12 +153,21 @@ def decide_side(row: dict, edge_threshold: float,
             # 30-HOUR RULE (Miami post-mortem 2026-04-17):
             # 2-day forecast error (~4.4°F) eats typical cushion.
             # Only fire if market resolves within 30 hours of NOW.
-            # End-of-day resolution = midnight local ≈ target_date + 1 day.
+            # Resolution = end-of-day in the CITY'S timezone (not system tz).
             from datetime import datetime as dt_cls, timedelta
-            resolution_approx = dt_cls.combine(td, dt_cls.min.time()) + timedelta(hours=24)
-            hours_to_resolution = (resolution_approx - dt_cls.now()).total_seconds() / 3600
+            from zoneinfo import ZoneInfo
+            from weather.cities import CITIES
+            city = row.get("city", "").lower()
+            city_tz_str = CITIES[city][2] if city in CITIES else "UTC"
+            city_tz = ZoneInfo(city_tz_str)
+            # Market resolves at midnight local = start of next day in city tz
+            resolution_local = dt_cls(td.year, td.month, td.day, 23, 59, tzinfo=city_tz)
+            now_utc = dt_cls.now(ZoneInfo("UTC"))
+            hours_to_resolution = (resolution_local - now_utc).total_seconds() / 3600
             if hours_to_resolution > 30:
                 return None  # too far out — forecast hasn't earned trust
+            if hours_to_resolution < -2:
+                return None  # already resolved
         except Exception:
             pass
 
