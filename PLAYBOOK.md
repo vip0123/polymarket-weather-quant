@@ -62,18 +62,42 @@ After applying the station offset, the **forecast cushion** (distance from thres
 
 ---
 
-## Rule 4 — Capital velocity (STRICT: day+1 priority)
+## Rule 4 — Capital velocity + forecast drift penalty (v4)
 
-Day+2 bets lock cash for 48hr. Day+1 bets recycle in 24hr. At similar ROI per bet, day+1 is 2x better in compounded daily velocity. This rule was violated 2026-04-16 (3 of 4 fires on day+2) — don't repeat.
+**New 2026-04-16 (v4): forecast drift is real and systematic.** Models refresh 4x/day. Each refresh shifts predictions 2-4°F. A 3°F cushion at day+2 entry typically erodes 1-2°F by resolution. ~25% of our day+1/day+2 bets today flipped from STRONG at entry to COINFLIP/LOSING at MtM (LA Apr 18, Denver Apr 17, Seoul Apr 17, Moscow Apr 17).
 
-**Priority order for new deployment:**
-1. **Day+1 (tomorrow)** with cushion ≥3°F post-offset — ALWAYS prefer, even if cushion is smaller than a day+2 alternative
-2. **Day+2** only if: (a) Day+1 has nothing passing filters, AND (b) edge ≥40pp OR cushion ≥6°F
-3. **Day+3+** only if edge ≥50pp
+Code-enforced penalty (`trader.py::decide_side`):
+```
+effective_p = 0.5 + (our_p - 0.5) × (1 - 0.08 × days_out)
+```
+- Day 0: no penalty (95% stays 95%)
+- Day+1: 95% → 91%
+- Day+2: 95% → 88% ... then tested against 40pp edge requirement
 
-**When Day+1 is saturated (every city already held):** HOLD CASH. Don't force day+2 fires just to deploy.
+This structurally prevents long-horizon bets that look strong at entry but are statistically likely to drift against us.
 
-The reasoning: locking $430 for 48hr at 35% ROI = ~17%/day velocity vs $430 for 24hr at 30% ROI = ~30%/day. The "better cushion" on day+2 loses the race when measured in daily compound terms.
+
+
+**Updated 2026-04-16 (v3):** Today-resolving bets are ALLOWED and often a primary profit source. Same-day means cash recycles in hours not days + `weather/intraday.py` narrows the probability distribution using observed hourlies.
+
+The `skip_today` parameter was REMOVED from `trader.py::decide_side` in 2026-04-16 to prevent future agents from accidentally re-enabling it. Do not re-add it.
+
+**Priority order for new deployment (all use same 20% edge threshold):**
+1. **TODAY** (same-day resolution) — GOOD, recycles fastest
+2. **Day+1 (tomorrow)** — standard
+3. **Day+2** only if edge ≥40pp (enforced in code)
+4. **Day+3+** blocked entirely (enforced in code)
+
+**For TODAY bets specifically:**
+- Prefer market with intraday data available (obs hourlies + remaining forecast)
+- Best window: after noon local time when most diurnal cycle has played out
+- Skip if market already near $0.95+ (too much of the edge already priced in)
+
+**When every window is empty:** HOLD CASH.
+
+Reasoning: $430 today at 30% ROI = same dollar recycled tomorrow = ~60% daily compound.
+$430 day+2 at 35% ROI = 48hr lock = ~17% daily compound.
+Same-day bets win on velocity even with lower per-bet ROI.
 
 ---
 
