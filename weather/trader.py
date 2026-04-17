@@ -374,6 +374,7 @@ def main():
     log.info("weather trader up. funder=%s", os.environ.get("POLY_FUNDER"))
 
     fired: dict[str, float] = {}  # (cid, side) -> entered_at
+    last_watchlist_refresh = 0.0
     live_orders: dict[str, dict] = {}  # order_id → {market, side, ask, size_usd, posted_at}
     last_refresh = 0.0
 
@@ -385,6 +386,18 @@ def main():
         if now_t - last_refresh > refresh_every_s:
             refresh_edge_table()
             last_refresh = now_t
+            # Also refresh the pre-window watchlist (every dump cycle)
+            try:
+                from weather.watchlist import refresh as wl_refresh, check_window_entries, load_watchlist
+                wl_refresh()
+                entered = check_window_entries(load_watchlist())
+                if entered:
+                    log.info("[WATCHLIST] %d item(s) entered 30hr window: %s",
+                             len(entered),
+                             ", ".join(f"{e['city']} {e['side']} {e['op']}{e['threshold_f']:.0f}"
+                                       for e in entered[:3]))
+            except Exception as e:
+                log.warning("[WATCHLIST] refresh err: %s", e)
         enabled = cfg.get("enabled", False)
         dry = cfg.get("dry_run", True)
         edge_thr = float(cfg.get("edge_threshold", 0.15))
