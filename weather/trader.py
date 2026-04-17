@@ -149,7 +149,16 @@ def decide_side(row: dict, edge_threshold: float,
             if days_out < 0:
                 return None
             if days_out > max_days_out:
-                return None  # Miami lesson: NEVER fire day+2+. Same-day/next-day only.
+                return None
+            # 30-HOUR RULE (Miami post-mortem 2026-04-17):
+            # 2-day forecast error (~4.4°F) eats typical cushion.
+            # Only fire if market resolves within 30 hours of NOW.
+            # End-of-day resolution = midnight local ≈ target_date + 1 day.
+            from datetime import datetime as dt_cls, timedelta
+            resolution_approx = dt_cls.combine(td, dt_cls.min.time()) + timedelta(hours=24)
+            hours_to_resolution = (resolution_approx - dt_cls.now()).total_seconds() / 3600
+            if hours_to_resolution > 30:
+                return None  # too far out — forecast hasn't earned trust
         except Exception:
             pass
 
