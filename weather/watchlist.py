@@ -185,8 +185,179 @@ def check_window_entries(watchlist: list[dict]) -> list[dict]:
     return entered
 
 
+SNAPSHOT_DIR = RUNTIME / "watchlist_snapshots"
+SNAPSHOT_DIR.mkdir(exist_ok=True)
+SNAPSHOT_INTERVAL_S = 3600  # every 1 hour — why not, data is free
+
+
+def snapshot_watched():
+    """Take a point-in-time snapshot of METAR + ensemble + market price for
+    each watchlist item. Appends to per-market JSON files so we can see
+    forecast drift over time before the market enters our firing window.
+
+    Each snapshot records:
+      - timestamp
+      - METAR current obs (if available for that station)
+      - Open-Meteo fresh single-best forecast peak
+      - Ensemble min/median/max + %members crossing threshold
+      - Live market YES price
+      - Computed cushion at this moment
+    """
+    items = load_watchlist()
+    if not items:
+        return
+
+    for item in items:
+        cid = item.get("conditionId", "")
+        if not cid:
+            continue
+        city = item.get("city", "").lower()
+        if city not in CITIES:
+            continue
+
+        snap_file = SNAPSHOT_DIR / f"{cid[:16]}_{city}.json"
+
+        # Load existing snapshots
+        existing = []
+        if snap_file.exists():
+            try:
+                existing = json.loads(snap_file.read_text())
+            except Exception:
+                existing = []
+
+        # Rate limit: skip if last snapshot < SNAPSHOT_INTERVAL_S ago
+        if existing:
+            last_ts = existing[-1].get("timestamp", "")
+            try:
+                from datetime import datetime as dt_cls
+                last_dt = dt_cls.fromisoformat(last_ts.replace("Z", "+00:00"))
+                age_s = (datetime.now(ZoneInfo("UTC")) - last_dt).total_seconds()
+                if age_s < SNAPSHOT_INTERVAL_S:
+                    continue  # too recent, skip
+            except Exception:
+                pass
+
+        lat, lon, tz_str, icao = CITIES[city][:4]
+        td_str = item.get("target_date", "")
+        metric = item.get("metric", "max_temp")
+        snap = {
+            "timestamp": datetime.now(ZoneInfo("UTC")).isoformat(),
+            "city": city,
+            "target_date": td_str,
+            "side": item.get("side"),
+            "threshold_f": item.get("threshold_f"),
+        }
+
+        # 1. METAR current obs
+        try:
+            from weather.metar import metar_current
+            mc = metar_current(icao, tz_str)
+            if mc:
+                snap["metar_temp_f"] = mc.get("temp_f")
+                snap["metar_time"] = mc.get("time_local") or mc.get("time_utc")
+                snap["metar_station"] = icao
+        except Exception:
+            pass
+
+        # 2. Fresh single-best forecast
+        fcst = fresh_forecast(lat, lon, tz_str, td_str, metric)
+        if fcst is not None:
+            offset_f = get_offset_c(city) * 9 / 5
+            snap["forecast_f"] = round(fcst, 1)
+            snap["effective_f"] = round(fcst + offset_f, 1)
+            thr = item.get("threshold_f", 0)
+            side = item.get("side", "NO")
+            op = item.get("op", ">=")
+            eff = fcst + offset_f
+            if side == "YES":
+                snap["cushion_f"] = round((eff - thr) if op == ">=" else (thr - eff), 1)
+            else:
+                snap["cushion_f"] = round((thr - eff) if op == ">=" else (eff - thr), 1)
+
+        # 3. Ensemble quick stats
+        try:
+            ens = fetch_open_meteo_ensemble(lat, lon,
+                                            dt_date.fromisoformat(td_str),
+                                            dt_date.fromisoformat(td_str))
+            if ens and "hourly" in ens:
+                times = ens["hourly"]["time"]
+                agg = max if metric != "min_temp" else min
+                vals = []
+                for k, v in ens["hourly"].items():
+                    if k == "time" or not isinstance(v, list):
+                        continue
+                    day = [x for t, x in zip(times, v)
+                           if x is not None and t[:10] == td_str]
+                    if day:
+                        vals.append(agg(day))
+                if vals:
+                    offset_f = get_offset_c(city) * 9 / 5
+                    adj = [v + offset_f for v in vals]
+                    snap["ensemble_n"] = len(adj)
+                    snap["ensemble_min_f"] = round(min(adj), 1)
+                    snap["ensemble_median_f"] = round(sorted(adj)[len(adj) // 2], 1)
+                    snap["ensemble_max_f"] = round(max(adj), 1)
+                    thr = item.get("threshold_f", 0)
+                    op = item.get("op", ">=")
+                    if op == ">=":
+                        snap["pct_above_threshold"] = round(
+                            100 * sum(1 for v in adj if v >= thr) / len(adj), 1)
+                    elif op == "<=":
+                        snap["pct_below_threshold"] = round(
+                            100 * sum(1 for v in adj if v <= thr) / len(adj), 1)
+        except Exception:
+            pass
+
+        # 4. Live market price
+        try:
+            tokens = json.loads(item.get("tokens", "[]"))
+            if tokens:
+                tok = tokens[0]  # YES token
+                r = requests.get("https://clob.polymarket.com/book",
+                                 params={"token_id": tok}, timeout=6).json()
+                asks = [float(a["price"]) for a in r.get("asks", [])]
+                bids = [float(b["price"]) for b in r.get("bids", [])]
+                if asks:
+                    snap["market_yes_ask"] = min(asks)
+                if bids:
+                    snap["market_yes_bid"] = max(bids)
+        except Exception:
+            pass
+
+        existing.append(snap)
+        # Keep last 50 snapshots per market
+        existing = existing[-50:]
+        try:
+            snap_file.write_text(json.dumps(existing, indent=2, default=str))
+        except Exception:
+            pass
+
+
+def show_snapshots(city: str = None):
+    """Print snapshot history for a watched market."""
+    for f in sorted(SNAPSHOT_DIR.glob("*.json")):
+        snaps = json.loads(f.read_text())
+        if not snaps:
+            continue
+        if city and city.lower() not in f.name:
+            continue
+        print(f"\n{'═' * 70}")
+        print(f"  {snaps[0].get('city','?')} — {snaps[0].get('target_date','?')} "
+              f"({snaps[0].get('side','?')} {snaps[0].get('threshold_f','?')}°F)")
+        print(f"{'═' * 70}")
+        print(f"  {'time':<22}{'forecast':<10}{'cushion':<9}{'ensemble':<15}{'metar':<10}{'mkt_yes'}")
+        for s in snaps:
+            ts = s.get("timestamp", "")[:16]
+            fcst = f"{s.get('forecast_f', '?')}°F" if s.get("forecast_f") else "?"
+            cush = f"{s.get('cushion_f', '?'):+.1f}" if s.get("cushion_f") is not None else "?"
+            ens_med = f"{s.get('ensemble_median_f', '?')}°F" if s.get("ensemble_median_f") else "?"
+            metar = f"{s.get('metar_temp_f', '?')}°F" if s.get("metar_temp_f") else "—"
+            mkt = f"${s.get('market_yes_ask', '?')}" if s.get("market_yes_ask") else "?"
+            print(f"  {ts:<22}{fcst:<10}{cush:<9}{ens_med:<15}{metar:<10}{mkt}")
+
+
 def refresh():
-    """Full watchlist refresh: scan → filter → save."""
+    """Full watchlist refresh: scan → filter → save → snapshot hourly."""
     candidates = scan_watchlist_candidates()
     # Merge with existing (keep scouted_at from first discovery)
     existing = {(w["conditionId"], w["side"]): w for w in load_watchlist()}
@@ -198,6 +369,8 @@ def refresh():
             c["scouted_at"] = existing[key].get("scouted_at", c["scouted_at"])
         merged.append(c)
     save_watchlist(merged[:50])  # cap at 50
+    # Take hourly snapshots of all watched items
+    snapshot_watched()
     return merged
 
 
@@ -227,9 +400,12 @@ def main():
     load_dotenv(ROOT / ".env")
     if "--show" in sys.argv:
         show()
+    elif "--snapshots" in sys.argv:
+        city = sys.argv[sys.argv.index("--snapshots") + 1] if len(sys.argv) > sys.argv.index("--snapshots") + 1 else None
+        show_snapshots(city)
     else:
         items = refresh()
-        print(f"Watchlist refreshed: {len(items)} candidates")
+        print(f"Watchlist refreshed: {len(items)} candidates (snapshots taken)")
         show()
 
 
