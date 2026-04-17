@@ -398,6 +398,24 @@ def main():
                                        for e in entered[:3]))
             except Exception as e:
                 log.warning("[WATCHLIST] refresh err: %s", e)
+            # Get watchlist context for any items entering window
+            try:
+                from weather.watchlist_comms import get_watchlist_context, mark_fired
+                for e in entered:
+                    ctx = get_watchlist_context(e.get("conditionId", ""), e.get("city", ""))
+                    drift = ctx.get("drift", {})
+                    rec = ctx.get("recommendation", "?")
+                    reason = ctx.get("reason", "")
+                    log.info("[WATCHLIST-INTEL] %s %s: %s — %s (stability=%.2f, "
+                             "cushion %s→%s°F over %.0fhrs, %d snapshots)",
+                             e.get("city"), e.get("side"), rec, reason,
+                             ctx.get("stability_score", 0),
+                             drift.get("cushion_first", "?"),
+                             drift.get("cushion_last", "?"),
+                             drift.get("hours_tracked", 0),
+                             drift.get("n_snapshots", 0))
+            except Exception:
+                pass
         enabled = cfg.get("enabled", False)
         dry = cfg.get("dry_run", True)
         edge_thr = float(cfg.get("edge_threshold", 0.15))
@@ -489,12 +507,37 @@ def main():
                 our = intraday_override
 
             # Kelly sizing: size scales with edge strength × confidence.
+            # Watchlist-sourced trades get stability_score as bonus confidence.
             p_win = our if side == "YES" else (1.0 - our)
             kelly_cap = float(cfg.get("kelly_cap", 0.20))
             nws_cache = getattr(main, "_nws_cache", {})
             main._nws_cache = nws_cache
             nws_conf = nws_confidence_for_row(row, nws_cache)
             conf = confidence_from_row(row, nws_conf=nws_conf)
+            # Check if this candidate has watchlist history → boost/penalize
+            wl_source = False
+            try:
+                from weather.watchlist_comms import get_watchlist_context, mark_fired
+                cid = row.get("conditionId", "")
+                ctx = get_watchlist_context(cid, row.get("city", ""))
+                if ctx.get("drift", {}).get("n_snapshots", 0) >= 2:
+                    wl_source = True
+                    stability = ctx.get("stability_score", 0.5)
+                    rec = ctx.get("recommendation", "CAUTION")
+                    if rec == "SKIP":
+                        log.info("[WL-SKIP] %s %s: watchlist says SKIP — %s",
+                                 row.get("city"), side, ctx.get("reason", ""))
+                        continue
+                    elif rec == "FIRE":
+                        conf = min(1.0, conf * 1.3)  # 30% confidence boost
+                        log.info("[WL-BOOST] %s %s: stability=%.2f → conf boosted",
+                                 row.get("city"), side, stability)
+                    elif rec == "CAUTION":
+                        conf = conf * 0.7  # 30% confidence reduction
+                        log.info("[WL-CAUTION] %s %s: %s → conf reduced",
+                                 row.get("city"), side, ctx.get("reason", ""))
+            except Exception:
+                pass
             f = kelly_fraction(p_win, best_ask, cap=kelly_cap, confidence=conf)
             bankroll = float(cfg.get("allocation_usd", 300.0))
             kelly_usd = f * bankroll
@@ -537,8 +580,15 @@ def main():
                 ))
                 resp = client.post_order(order)
                 oid = resp.get("orderID", "")
-                log.info("[BUY] %s %s kelly=%.3f ≈$%.2f @ %.3f → %s",
-                         row["city"], side, f, size_usd, best_ask, resp.get("status"))
+                wl_tag = " [WL-SOURCED]" if wl_source else ""
+                log.info("[BUY]%s %s %s kelly=%.3f ≈$%.2f @ %.3f → %s",
+                         wl_tag, row["city"], side, f, size_usd, best_ask, resp.get("status"))
+                # Tell watchlist this market was fired — stop tracking
+                if wl_source:
+                    try:
+                        mark_fired(row.get("conditionId", ""), side)
+                    except Exception:
+                        pass
                 if oid:
                     live_orders[oid] = {
                         "market": row["question"][:60], "side": side,
