@@ -83,8 +83,8 @@ def fresh_forecast(lat: float, lon: float, tz: str, date_s: str,
         return None
 
 
-def scan_watchlist_candidates(max_days: int = 5, min_edge: float = 0.20,
-                               min_cushion: float = 3.5) -> list[dict]:
+def scan_watchlist_candidates(max_days: int = 5, min_edge: float = 0.15,
+                               min_cushion: float = 2.5) -> list[dict]:
     """Scan edge_table for markets 30h+ out that look promising."""
     if not EDGE_CSV.exists():
         return []

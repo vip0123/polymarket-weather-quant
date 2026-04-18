@@ -151,31 +151,98 @@ def get_watchlist_context(condition_id: str, city: str = "") -> dict:
     snaps = get_snapshot_history(condition_id, city)
     drift = analyze_drift(snaps)
 
-    # Recommendation logic
+    # ── Rich analytics layer ──
+    # Don't just pass/fail — give the trader AND the user a full picture
     score = drift.get("stability_score", 0.5)
     trend = drift.get("cushion_trend", "unknown")
     cushion_last = drift.get("cushion_last")
+    cushion_first = drift.get("cushion_first")
+    n_snaps = drift.get("n_snapshots", 0)
+    hours = drift.get("hours_tracked", 0)
+    fcst_drift = drift.get("forecast_drift_f", 0)
 
+    # Market price momentum (are other traders catching on?)
+    mkt_prices = [s.get("market_yes_ask") for s in snaps
+                  if s.get("market_yes_ask") is not None]
+    mkt_momentum = "unknown"
+    mkt_delta = 0
+    if len(mkt_prices) >= 2:
+        mkt_delta = mkt_prices[-1] - mkt_prices[0]
+        if mkt_delta > 0.05:
+            mkt_momentum = "rising"  # market moving toward YES
+        elif mkt_delta < -0.05:
+            mkt_momentum = "falling"  # market moving toward NO
+        else:
+            mkt_momentum = "flat"
+
+    # METAR trend (actual obs vs forecast — is reality matching?)
+    metar_temps = [s.get("metar_temp_f") for s in snaps
+                   if s.get("metar_temp_f") is not None]
+    metar_vs_forecast = "no_data"
+    if metar_temps and snaps:
+        last_fcst = next((s.get("forecast_f") for s in reversed(snaps)
+                         if s.get("forecast_f")), None)
+        if last_fcst and metar_temps[-1]:
+            gap = metar_temps[-1] - last_fcst
+            if abs(gap) < 2:
+                metar_vs_forecast = "tracking"
+            elif gap > 2:
+                metar_vs_forecast = "warmer_than_forecast"
+            else:
+                metar_vs_forecast = "cooler_than_forecast"
+
+    # Recommendation with full reasoning
+    reasons = []
     if cushion_last is not None and cushion_last < 2.0:
         rec = "SKIP"
-        reason = f"cushion eroded to {cushion_last:+.1f}°F — below 2°F minimum"
-    elif trend == "eroding" and score < 0.3:
+        reasons.append(f"cushion eroded to {cushion_last:+.1f}°F — below 2°F floor")
+    elif cushion_last is not None and cushion_last < 3.0 and trend == "eroding":
         rec = "SKIP"
-        reason = f"cushion eroding rapidly ({drift.get('cushion_delta', 0):+.1f}°F drift)"
-    elif trend == "eroding":
+        reasons.append(f"cushion {cushion_first}→{cushion_last}°F and still falling")
+    elif trend == "eroding" and abs(drift.get("cushion_delta", 0)) > 2.0:
         rec = "CAUTION"
-        reason = f"cushion trending down ({drift.get('cushion_delta', 0):+.1f}°F) — fire small"
-    elif score >= 0.7:
+        reasons.append(f"big erosion: {drift.get('cushion_delta',0):+.1f}°F over {hours:.0f}hrs")
+    elif trend == "improving" and n_snaps >= 3:
         rec = "FIRE"
-        reason = f"cushion {trend} over {drift.get('hours_tracked', 0):.0f}hrs — high conviction"
-    else:
+        reasons.append(f"cushion GROWING: {cushion_first}→{cushion_last}°F over {hours:.0f}hrs")
+    elif trend == "stable" and n_snaps >= 3 and cushion_last and cushion_last >= 4.0:
+        rec = "FIRE"
+        reasons.append(f"rock solid: {cushion_last}°F cushion held across {n_snaps} snapshots")
+    elif n_snaps >= 2:
         rec = "CAUTION"
-        reason = f"limited data ({drift.get('n_snapshots', 0)} snapshots)"
+        reasons.append(f"cushion {trend} ({drift.get('cushion_delta',0):+.1f}°F), needs monitoring")
+    else:
+        rec = "WATCH"
+        reasons.append(f"only {n_snaps} snapshot(s) — need more data before firing")
+
+    # Add market momentum context
+    if mkt_momentum == "rising" and rec in ("FIRE", "CAUTION"):
+        reasons.append(f"market YES moving up ({mkt_delta:+.2f}) — retail catching on, edge shrinking")
+    elif mkt_momentum == "falling":
+        reasons.append(f"market YES dropping ({mkt_delta:+.2f}) — edge may be widening")
+
+    # Add METAR context
+    if metar_vs_forecast == "warmer_than_forecast":
+        reasons.append("⚠️ METAR running WARMER than forecast — offset risk")
+    elif metar_vs_forecast == "cooler_than_forecast":
+        reasons.append("METAR running cooler than forecast — favorable for our thesis")
 
     return {
         "snapshots": snaps,
         "drift": drift,
         "recommendation": rec,
-        "reason": reason,
+        "reasons": reasons,
+        "reason": " | ".join(reasons),
         "stability_score": score,
+        "market_momentum": mkt_momentum,
+        "market_price_delta": round(mkt_delta, 3),
+        "metar_vs_forecast": metar_vs_forecast,
+        "analytics": {
+            "cushion_trajectory": f"{cushion_first}→{cushion_last}°F" if cushion_first else "?",
+            "forecast_drift": f"{fcst_drift:+.1f}°F",
+            "hours_tracked": hours,
+            "snapshots": n_snaps,
+            "market_trend": mkt_momentum,
+            "metar_alignment": metar_vs_forecast,
+        },
     }
