@@ -450,6 +450,37 @@ def main():
             if key in fired:
                 continue
 
+            # Cumulative position check — prevent stacking across restarts.
+            # Pull live positions and skip if we already hold this market.
+            # Rule 17: lottery tickets (ask < $0.15) capped at $25 total.
+            try:
+                if not hasattr(main, "_held_tokens"):
+                    import requests as _r
+                    _pr = _r.get("https://data-api.polymarket.com/positions",
+                                 params={"user": os.environ.get("POLY_FUNDER", ""),
+                                         "sizeThreshold": 0.1},
+                                 headers={"User-Agent": "Mozilla/5.0"}, timeout=10).json()
+                    main._held_tokens = {}
+                    for _p in _pr:
+                        if float(_p.get("curPrice", 0)) < 0.02: continue
+                        _asset = _p.get("asset", "")
+                        _cost = float(_p.get("initialValue", 0))
+                        main._held_tokens[_asset] = _cost
+                    main._held_tokens_ts = time.time()
+                # Refresh held tokens every 5 min
+                if time.time() - getattr(main, "_held_tokens_ts", 0) > 300:
+                    main._held_tokens = None  # force refresh next cycle
+                    delattr(main, "_held_tokens")
+                    continue
+                existing_cost = main._held_tokens.get(token, 0)
+                if existing_cost >= max_pos_usd:
+                    log.info("[POS-CAP] %s %s already $%.0f deployed (cap $%.0f)",
+                             row.get("city"), row.get("target_date"),
+                             existing_cost, max_pos_usd)
+                    continue
+            except Exception:
+                pass  # if check fails, proceed with normal flow
+
             book = fetch_book(token)
             if not book:
                 continue
