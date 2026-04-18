@@ -83,8 +83,12 @@ def fresh_forecast(lat: float, lon: float, tz: str, date_s: str,
         return None
 
 
-def scan_watchlist_candidates(max_days: int = 5, min_edge: float = 0.15,
-                               min_cushion: float = 2.5) -> list[dict]:
+def scan_watchlist_candidates(max_days: int = 5, min_edge: float = 0.08,
+                               min_cushion: float = 1.5) -> list[dict]:
+    """Cast a WIDE net for watching — low thresholds because we're gathering
+    intelligence, not firing. A market with 1.5°F cushion today might have
+    4°F cushion tomorrow. We want to be tracking it BEFORE it becomes tradeable.
+    The trader's own gates (4°F cushion, 25pp edge) decide what actually fires."""
     """Scan edge_table for markets 30h+ out that look promising."""
     if not EDGE_CSV.exists():
         return []
@@ -95,9 +99,7 @@ def scan_watchlist_candidates(max_days: int = 5, min_edge: float = 0.15,
     candidates = []
 
     for r in rows:
-        # Only directional
-        if r.get("op") not in (">=", "<="):
-            continue
+        # Watch BOTH directional AND bucket markets — we're scouting, not firing
         td_str = r.get("target_date")
         if not td_str:
             continue
@@ -112,7 +114,6 @@ def scan_watchlist_candidates(max_days: int = 5, min_edge: float = 0.15,
         if city not in CITIES:
             continue
 
-        # Check if OUTSIDE the 30-hour window (those are for the trader, not us)
         hrs = hours_to_resolution(td, city)
         if hrs <= 30:
             continue  # already in firing window — trader handles this
@@ -123,7 +124,6 @@ def scan_watchlist_candidates(max_days: int = 5, min_edge: float = 0.15,
             edge = abs(our - mkt)
             if edge < min_edge:
                 continue
-            thr = float(r["threshold"])
             fcst = float(r["forecast_f"])
         except (ValueError, TypeError, KeyError):
             continue
@@ -132,10 +132,25 @@ def scan_watchlist_candidates(max_days: int = 5, min_edge: float = 0.15,
         eff = fcst + offset_f
         side = "YES" if our > mkt else "NO"
 
-        if r["op"] == ">=":
-            cushion = (eff - thr) if side == "YES" else (thr - eff)
+        # Cushion calculation — handle both directional and buckets
+        if r.get("op") in (">=", "<="):
+            thr = float(r["threshold"])
+            if r["op"] == ">=":
+                cushion = (eff - thr) if side == "YES" else (thr - eff)
+            else:
+                cushion = (thr - eff) if side == "YES" else (eff - thr)
+        elif r.get("op") == "in":
+            try:
+                lo, hi = [float(x) for x in r["threshold"].split("-")]
+            except Exception:
+                continue
+            thr = (lo + hi) / 2  # midpoint for display
+            if side == "YES":
+                cushion = min(eff - lo, hi - eff) if lo <= eff <= hi else -1
+            else:
+                cushion = -1 if lo <= eff <= hi else min(abs(eff - lo), abs(eff - hi))
         else:
-            cushion = (thr - eff) if side == "YES" else (eff - thr)
+            continue
 
         if cushion < min_cushion:
             continue
