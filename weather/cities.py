@@ -39,17 +39,17 @@ CITIES = {
     # International
     "london":        (51.4700, -0.4543, "Europe/London",          "EGLL"),  # Heathrow inland
     "paris":         (49.0097, 2.5479, "Europe/Paris",            "LFPG"),  # CDG inland
-    "tokyo":         (35.6762, 139.6503, "Asia/Tokyo",            "RJTT"),  # Haneda coastal — use city
+    "tokyo":         (35.5494, 139.7798, "Asia/Tokyo",            "RJTT"),  # Haneda airport coords
     "moscow":        (55.9726, 37.4146, "Europe/Moscow",          "UUEE"),  # inland
-    "dubai":         (25.2048, 55.2708, "Asia/Dubai",             "OMDB"),  # coastal
-    "singapore":     (1.3521, 103.8198, "Asia/Singapore",         "WSSS"),  # island — use city
-    "sydney":        (-33.8688, 151.2093, "Australia/Sydney",     "YSSY"),  # coastal
-    "mumbai":        (19.0760, 72.8777, "Asia/Kolkata",           "VABB"),  # coastal
+    "dubai":         (25.2528, 55.3644, "Asia/Dubai",             "OMDB"),  # DXB airport
+    "singapore":     (1.3644, 103.9915, "Asia/Singapore",         "WSSS"),  # Changi airport coords
+    "sydney":        (-33.9399, 151.1753, "Australia/Sydney",     "YSSY"),  # Kingsford-Smith airport
+    "mumbai":        (19.0896, 72.8656, "Asia/Kolkata",           "VABB"),  # BOM airport
     "berlin":        (52.3667, 13.5033, "Europe/Berlin",          "EDDB"),  # BER inland
     "madrid":        (40.4936, -3.5668, "Europe/Madrid",          "LEMD"),  # Barajas inland
-    "seoul":         (37.5665, 126.9780, "Asia/Seoul",            "RKSI"),  # Incheon is island — use city, offset
+    "seoul":         (37.4602, 126.4407, "Asia/Seoul",            "RKSI"),  # Incheon airport coords (Open-Meteo grid resolves here fine as of 2026-04)
     "beijing":       (40.0799, 116.6031, "Asia/Shanghai",         "ZBAA"),  # inland
-    "hong kong":     (22.3193, 114.1694, "Asia/Hong_Kong",        "VHHH"),  # island — use city
+    "hong kong":     (22.3080, 113.9185, "Asia/Hong_Kong",        "VHHH"),  # HKIA airport coords
     "bangkok":       (13.6900, 100.7501, "Asia/Bangkok",          "VTBS"),  # inland
     "toronto":       (43.6777, -79.6248, "America/Toronto",       "CYYZ"),  # Pearson inland
     "mexico city":   (19.4361, -99.0719, "America/Mexico_City",   "MMMX"),  # inland
@@ -63,19 +63,11 @@ CITIES = {
 # our Open-Meteo forecast. Learned from reconciliation after markets resolve.
 # Applied BEFORE edge computation: effective_forecast_C = raw_forecast_C + offset.
 STATION_OFFSET_C = {
-    "seoul":       -1.8,   # CONFIRMED 2026-04-15: central Seoul +1.8°C warmer than RKSI oracle
-    "los angeles": -2.8,   # HYPOTHESIS 2026-04-15: LAX coastal reads ~5°F (2.8°C) cooler
-    "la":          -2.8,   # same as LA
-    # below awaiting first-resolution confirmation
-    # "miami":      -1.0,  # bayside, mild cooling
-    # "san francisco": -2.0,  # strong marine layer
-    # "seattle":    -1.0,  # Puget Sound
-    # "boston":     -1.5,  # coastal
-    # "hong kong":  -1.5,  # island airport
-    # "singapore":  -1.0,  # island
-    # "sydney":     -1.5,  # coastal
-    # "tokyo":      -1.5,  # Haneda near bay
-    # Default for unknown = 0
+    # 2026-04-18: zeroed. We now pull Open-Meteo at airport coords directly — no
+    # city-vs-airport offset needed. Static offsets mis-fire across synoptic
+    # patterns (Seoul Apr 18 near-loss proved the -1.8 was only valid for
+    # uniform air; coastal marine intrusion made real delta 4-6°C). Keep this
+    # dict only for known METAR-sensor-specific biases in the future.
 }
 
 
