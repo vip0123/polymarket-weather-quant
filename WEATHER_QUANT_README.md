@@ -41,10 +41,8 @@ cp .env.example .env
 
 # 5. Seed the runtime configs (start disabled for safety)
 mkdir -p dashboard/runtime
-cp dashboard/runtime_examples/weather_trader_config.example.json \
-   dashboard/runtime/weather_trader_config.json
-cp dashboard/runtime_examples/copy_config.example.json \
-   dashboard/runtime/copy_config.json
+cp dashboard/runtime_examples/weather_trader_config.example.json dashboard/runtime/weather_trader_config.json
+cp dashboard/runtime_examples/copy_config.example.json dashboard/runtime/copy_config.json
 
 # 6. Test the stack in dry mode
 uv run python -m weather.dump           # generates edge_table.csv

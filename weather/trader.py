@@ -25,10 +25,8 @@ from typing import Optional
 
 import requests
 from dotenv import load_dotenv
-from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import ApiCreds, OrderArgs
-from py_clob_client.constants import POLYGON
-from py_clob_client.order_builder.constants import BUY
+from py_clob_client_v2 import ClobClient, ApiCreds, OrderArgs, Side
+from py_clob_client_v2.constants import POLYGON
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNTIME = ROOT / "dashboard" / "runtime"
@@ -196,8 +194,10 @@ def refresh_edge_table() -> bool:
     import subprocess
     try:
         log.info("[REFRESH] running weather.dump ...")
+        import sys as _sys
+        python_exe = str(Path(_sys.executable))
         r = subprocess.run(
-            [".venv/bin/python3", "-m", "weather.dump"],
+            [python_exe, "-m", "weather.dump"],
             cwd=str(ROOT), timeout=300, capture_output=True, text=True,
         )
         if r.returncode == 0:
@@ -353,15 +353,32 @@ def check_order_status(client: ClobClient, order_id: str) -> Optional[str]:
     return None
 
 
+def _apply_proxy(proxy_url: str) -> None:
+    """Patch the module-level httpx client used by py_clob_client_v2 to route
+    all CLOB requests through a proxy (needed in geo-blocked regions like NL/US).
+    Also sets HTTPS_PROXY so that any bare requests.get() calls pick it up."""
+    import httpx
+    import py_clob_client_v2.http_helpers.helpers as _hh
+    _hh._http_client = httpx.Client(http2=False, proxy=proxy_url)
+    os.environ["HTTPS_PROXY"] = proxy_url
+    os.environ["HTTP_PROXY"] = proxy_url
+    host_port = proxy_url.split("@")[-1] if "@" in proxy_url else proxy_url
+    log.info("proxy active: ...%s", host_port)
+
+
 def main():
     load_dotenv(ROOT / ".env")
     signal.signal(signal.SIGINT, sigterm)
     signal.signal(signal.SIGTERM, sigterm)
 
+    proxy_url = os.environ.get("POLY_PROXY_URL", "").strip()
+    if proxy_url:
+        _apply_proxy(proxy_url)
+
     creds = ApiCreds(
         api_key=os.environ["POLY_API_KEY"],
-        api_secret=os.environ["POLY_API_SECRET"],
-        api_passphrase=os.environ["POLY_API_PASSPHRASE"],
+        api_secret=os.environ.get("POLY_API_SECRET", "") or "",
+        api_passphrase=os.environ.get("POLY_API_PASSPHRASE", "") or "",
     )
     client = ClobClient(
         host="https://clob.polymarket.com",
@@ -371,6 +388,29 @@ def main():
         funder=os.environ.get("POLY_FUNDER"),
         creds=creds,
     )
+
+    # Polymarket v2 "Relayer API Keys" (created via browser UI) have no
+    # secret/passphrase — they use L1 EIP-712 auth for order posting.
+    # Monkey-patch post_order to send L1 headers instead of HMAC headers.
+    if not creds.api_secret:
+        import json as _json, types as _types
+        from py_clob_client_v2.order_utils.model.order_data_v2 import order_to_json_v2
+        from py_clob_client_v2.order_utils.model.order_data_v1 import order_to_json_v1
+        from py_clob_client_v2.endpoints import POST_ORDER as _POST_ORDER
+        from py_clob_client_v2.clob_types import OrderType as _OT
+
+        def _post_order_l1(self, order, order_type=_OT.GTC, post_only=False, defer_exec=False):
+            _has_v2 = hasattr(order, 'salt')
+            owner = self.creds.api_key or ""
+            payload = order_to_json_v2(order, owner, order_type, post_only, defer_exec) if _has_v2 else order_to_json_v1(order, owner, order_type, post_only, defer_exec)
+            serialized = _json.dumps(payload, separators=(',', ':'))
+            headers = self._l1_headers()
+            headers['Content-Type'] = 'application/json'
+            return self._post(f"{self.host}{_POST_ORDER}", headers=headers, data=serialized)
+
+        client.post_order = _types.MethodType(_post_order_l1, client)
+        log.info("using L1 auth for post_order (Relayer API Key mode)")
+
     log.info("weather trader up. funder=%s", os.environ.get("POLY_FUNDER"))
 
     fired: dict[str, float] = {}  # (cid, side) -> entered_at
@@ -532,10 +572,12 @@ def main():
             # Intraday obs override: for today's markets, use hourly obs.
             our = float(row["our_p"])
             intraday_override = intraday_p_for_row(row)
+            intraday_used = False
             if intraday_override is not None:
                 log.info("[INTRADAY] %s raw=%.3f → intraday=%.3f", row["city"],
                          our, intraday_override)
                 our = intraday_override
+                intraday_used = True
 
             # Kelly sizing: size scales with edge strength × confidence.
             # Watchlist-sourced trades get stability_score as bonus confidence.
@@ -545,6 +587,12 @@ def main():
             main._nws_cache = nws_cache
             nws_conf = nws_confidence_for_row(row, nws_cache)
             conf = confidence_from_row(row, nws_conf=nws_conf)
+            # Intraday observations are ground truth — override ensemble confidence.
+            # When hourly obs fully confirm (p≥0.95 or p≤0.05), use full confidence.
+            if intraday_used and (our >= 0.95 or our <= 0.05):
+                conf = max(conf, 0.9)
+                log.info("[INTRADAY-CONF] %s conf boosted to %.2f (intraday p=%.3f)",
+                         row["city"], conf, our)
             # Check if this candidate has watchlist history → boost/penalize
             wl_source = False
             try:
@@ -607,7 +655,7 @@ def main():
 
             try:
                 order = client.create_order(OrderArgs(
-                    token_id=token, price=best_ask, size=size_shares, side=BUY,
+                    token_id=token, price=best_ask, size=size_shares, side=Side.BUY,
                 ))
                 resp = client.post_order(order)
                 oid = resp.get("orderID", "")

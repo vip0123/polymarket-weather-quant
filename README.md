@@ -1,258 +1,264 @@
-# Polymarket Data
+# Polymarket Weather Quant
 
-A comprehensive data pipeline for fetching, processing, and analyzing Polymarket trading data. This system collects market information, order-filled events, and processes them into structured trade data.
+A calibrated weather-prediction trading engine for Polymarket, combined with a full data pipeline for market and trade data collection. Uses Open-Meteo ensemble forecasts, station-offset calibration, and Kelly sizing to find and trade mispriced weather markets.
 
-## Quick Download
+## Quick Download (data pipeline)
 
-**First-time users**: Download the [latest data snapshot](https://polydata-archive.s3.us-east-1.amazonaws.com/orderFilled_complete.csv.xz) (Credits to [@PendulumFlow](https://x.com/PendulumFlow) for fixing some missing points in the data and sending it over) and extract it in the main repository directory before your first run [(backup if this doesn't work)](https://polydata-archive.s3.us-east-1.amazonaws.com/archive.tar.xz). This will save you over 2 days of initial data collection time.
+**First-time users**: Download the [latest data snapshot](https://polydata-archive.s3.us-east-1.amazonaws.com/orderFilled_complete.csv.xz) (Credits to [@PendulumFlow](https://x.com/PendulumFlow)) and extract it in the repo root before your first run [(backup)](https://polydata-archive.s3.us-east-1.amazonaws.com/archive.tar.xz). This saves 2+ days of backfill time.
 
 ## Overview
 
-This pipeline performs three main operations:
+Three-stage data pipeline plus an autonomous weather trading engine:
 
-1. **Market Data Collection** - Fetches all Polymarket markets with metadata
-2. **Order Event Scraping** - Collects order-filled events from Goldsky subgraph
-3. **Trade Processing** - Transforms raw order events into structured trade data
+1. **Market Data Collection** — fetches all Polymarket markets with metadata
+2. **Order Event Scraping** — collects order-filled events from Goldsky subgraph
+3. **Trade Processing** — transforms raw events into structured trade data
+4. **Weather Trader** — scans weather markets, computes edge, places Kelly-sized orders
 
 ## Installation
 
-This project uses [UV](https://docs.astral.sh/uv/) for fast, reliable package management.
+This project uses [UV](https://docs.astral.sh/uv/) for package management.
 
-### Install UV
-
-```bash
-# macOS/Linux
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# Windows
+```powershell
+# Install UV (Windows)
 powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
 
-# Or with pip
-pip install uv
-```
-
-### Install Dependencies
-
-```bash
-# Install all dependencies
+# Install dependencies
 uv sync
 
-# Install with development dependencies (Jupyter, etc.)
+# With Jupyter/notebook support
 uv sync --extra dev
 ```
 
-## Quick Start
+## Wallet Setup (MetaMask — recommended)
 
-```bash
-# Run with UV (recommended)
-uv run python update_all.py
+Polymarket uses a **Gnosis Safe** automatically deployed for each MetaMask account. The Safe is your trading wallet (holds USDC, shown on polymarket.com). Your MetaMask EOA is the Safe owner and signer.
 
-# Or activate the virtual environment first
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-python update_all.py
+### 1. Export your MetaMask private key
+
+MetaMask → account menu → **Account details** → **Show private key**
+
+Verify it resolves to the correct address:
+```powershell
+uv run python -c "from eth_account import Account; print(Account.from_key('0xYOUR_KEY').address)"
+# Should match the owner shown at https://app.safe.global for your Polymarket Safe
 ```
 
-This will sequentially run all three pipeline stages:
-- Update markets from Polymarket API
-- Update order-filled events from Goldsky
-- Process new orders into trades
+To find which address owns your Polymarket Safe (`0xYOUR_SAFE_ADDRESS`):
+```powershell
+uv run python check_contract.py   # reads POLY_WALLET_ADDRESS from .env
+```
+
+### 2. Create the `.env` file
+
+```ini
+# CLOB API credentials (generate via: uv run python create_api_key_cffi.py)
+POLY_API_KEY=
+POLY_API_SECRET=
+POLY_API_PASSPHRASE=
+
+# MetaMask private key (Safe owner/signer)
+POLY_PRIVATE_KEY=0xYOUR_METAMASK_PRIVATE_KEY
+
+# Gnosis Safe address (shown on polymarket.com — your trading wallet)
+POLY_WALLET_ADDRESS=0xYOUR_SAFE_ADDRESS
+POLY_FUNDER=0xYOUR_SAFE_ADDRESS   # same as POLY_WALLET_ADDRESS for MetaMask users
+POLY_SIGNATURE_TYPE=2             # 2 = Gnosis Safe
+
+# Proxy (required if your region is geo-blocked by Polymarket)
+# Format: http://user:pass@host:port
+POLY_PROXY_URL=
+
+# Copy engine target (optional)
+COPY_TARGET_WALLET=
+```
+
+> **Signature types**: `0` = EOA (MetaMask direct), `1` = Magic Link proxy, `2` = Gnosis Safe (MetaMask via Polymarket). Most MetaMask users are type `2`.
+
+### 3. Generate CLOB API credentials
+
+```powershell
+uv run python create_api_key_cffi.py
+```
+
+This creates a new API key bound to your MetaMask EOA and writes it directly to `.env`. Uses `curl_cffi` with Cloudflare impersonation — works even without a proxy.
+
+### 4. Verify the full stack
+
+```powershell
+uv run python test_proxy.py
+# Expected: "✅ SUCCESS — proxy + L2 auth working!"
+```
+
+### 5. Seed runtime configs
+
+```powershell
+New-Item -ItemType Directory -Force -Path dashboard\runtime
+Copy-Item dashboard\runtime_examples\weather_trader_config.example.json dashboard\runtime\weather_trader_config.json
+Copy-Item dashboard\runtime_examples\copy_config.example.json dashboard\runtime\copy_config.json
+```
+
+Edit `dashboard/runtime/weather_trader_config.json`:
+- `"enabled": false` and `"dry_run": true` to start
+- Set `"enabled": true, "dry_run": false` when ready to trade live
+
+### 6. Start the weather trader
+
+**Windows (PowerShell):**
+```powershell
+# In a dedicated PowerShell window — auto-restarts on crash
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
+.\dashboard\supervise_weather.ps1
+```
+
+**Linux/macOS:**
+```bash
+nohup ./dashboard/supervise_weather.sh > dashboard/runtime/supervisor_weather.log 2>&1 &
+```
+
+## Data Pipeline
+
+### Run the full pipeline
+
+```powershell
+uv run python update_all.py
+```
+
+### Run individual stages
+
+```powershell
+uv run python -c "from update_utils.update_markets import update_markets; update_markets()"
+uv run python -c "from update_utils.update_goldsky import update_goldsky; update_goldsky()"
+uv run python -c "from update_utils.process_live import process_live; process_live()"
+```
+
+### Fast parallel Goldsky backfill
+
+```powershell
+uv run python parallel_sync.py --workers 5
+```
+
+All pipeline stages are **idempotent and resumable** — re-running picks up from the last checkpoint.
 
 ## Project Structure
 
 ```
-poly_data/
-├── update_all.py              # Main orchestrator script
-├── update_utils/              # Data collection modules
-│   ├── update_markets.py      # Fetch markets from Polymarket API
-│   ├── update_goldsky.py      # Scrape order events from Goldsky
-│   └── process_live.py        # Process orders into trades
-├── poly_utils/                # Utility functions
-│   └── utils.py               # Market loading and missing token handling
-├── markets.csv                # Main markets dataset
-├── missing_markets.csv        # Markets discovered from trades (auto-generated)
-├── goldsky/                   # Order-filled events (auto-generated)
-│   └── orderFilled.csv
-└── processed/                 # Processed trade data (auto-generated)
-    └── trades.csv
+├── update_all.py                   # Full pipeline orchestrator
+├── parallel_sync.py                # Parallel Goldsky backfill
+├── update_utils/
+│   ├── update_markets.py           # Fetch markets from Polymarket API
+│   ├── update_goldsky.py           # Scrape order events from Goldsky
+│   └── process_live.py             # Process orders into trades
+├── poly_utils/
+│   └── utils.py                    # get_markets(), PLATFORM_WALLETS
+├── weather/
+│   ├── trader.py                   # Autonomous trading engine
+│   ├── model.py                    # Gaussian ensemble probability model
+│   ├── cities.py                   # City registry + STATION_OFFSET_C calibration
+│   ├── parser.py                   # Market title parser (°C / °F / range)
+│   ├── sources.py                  # Open-Meteo ensemble fetcher
+│   ├── intraday.py                 # Same-day hourly-obs override
+│   ├── nws.py                      # NWS cross-check (US cities)
+│   ├── positions.py                # Live portfolio CLI
+│   └── feed.py                     # Buy/edge stream viewer
+├── dashboard/
+│   ├── supervise_weather.ps1       # Windows supervisor
+│   ├── supervise_weather.sh        # Linux/macOS supervisor
+│   └── runtime/                    # Per-wallet state (gitignored)
+│       ├── weather_trader_config.json
+│       ├── weather_trader_state.json
+│       └── weather_trader_trades.csv
+├── markets.csv                     # Market metadata (tracked)
+├── goldsky/orderFilled.csv         # Raw events (auto-generated, large)
+└── processed/trades.csv            # Structured trades (auto-generated)
 ```
 
-## Data Files
+## Per-wallet state (never commit)
+
+- `.env` — private key + CLOB creds
+- `dashboard/runtime/*_state.json` — in-memory position state
+- `dashboard/runtime/*_trades.csv` — trade history
+- `weather/edge_table.csv` — computed edge (wallet-agnostic, safe to share)
+
+All wallet-specific files are excluded via `.gitignore`.
+
+## Station offsets (calibration)
+
+`weather/cities.py::STATION_OFFSET_C` holds learned temperature biases between Open-Meteo city-center coordinates and each city's Polymarket oracle station. **Always apply the offset before computing cushion.** Updated from real resolution data — see comments in the file.
+
+## Key trading rules (see PLAYBOOK.md for full list)
+
+1. Apply `STATION_OFFSET_C` before computing edge — coastal airports run 1.5–3 °C cooler than city grids
+2. Never fire single-degree buckets — integer rounding means cushion ≤ 0.5 °F
+3. Use ensemble median, not mean — outlier members skew the mean
+4. Re-fetch forecast just before firing — stale edge tables lose money
+5. Prefer same-day / next-day resolutions for capital velocity
+
+## Geo-block
+
+Polymarket blocks certain regions (US, UK, NL, etc.). Set `POLY_PROXY_URL` in `.env` to a residential or mobile proxy from an unblocked country. Test with:
+
+```powershell
+uv run python -c "
+import httpx, os; from dotenv import load_dotenv; load_dotenv('.env')
+proxy = os.environ['POLY_PROXY_URL']
+with httpx.Client(proxy=proxy, timeout=15) as hc:
+    print(hc.get('https://polymarket.com/api/geoblock').json())
+"
+```
+
+`blocked: False` means you're good.
+
+## Troubleshooting
+
+| Error | Cause | Fix |
+|-------|-------|-----|
+| `invalid signature` | Wrong `POLY_FUNDER` or `POLY_SIGNATURE_TYPE` | MetaMask users: `POLY_SIGNATURE_TYPE=2`, `POLY_FUNDER=<Safe address>` |
+| `Could not derive api key` | No key exists for this EOA at nonce 0-4 | Run `create_api_key_cffi.py` to create one |
+| `not enough balance` | Wrong funder address or funds not deposited | Verify `POLY_FUNDER` matches the address shown on polymarket.com |
+| `403 Cloudflare` on `/auth/api-key` | Plain httpx blocked by CF | Use `create_api_key_cffi.py` (curl_cffi with `impersonate='chrome'`) |
+| `blocked: True` on geoblock | Region not supported | Set `POLY_PROXY_URL` to a proxy in LV, DE, etc. |
+| `private key must be exactly 32 bytes` | Key missing `0x` prefix or wrong length | Ensure key is `0x` + 64 hex chars |
+
+## Data files
+
+## Data files
 
 ### markets.csv
-Market metadata including:
-- Market question, outcomes, and tokens
-- Creation/close times and slugs
-- Trading volume and condition IDs
-- Negative risk indicators
+Market metadata: question, outcomes, tokens, close time, volume, condition ID, neg_risk flag.
 
 **Fields**: `createdAt`, `id`, `question`, `answer1`, `answer2`, `neg_risk`, `market_slug`, `token1`, `token2`, `condition_id`, `volume`, `ticker`, `closedTime`
 
 ### goldsky/orderFilled.csv
-Raw order-filled events with:
-- Maker/taker addresses and asset IDs
-- Fill amounts and transaction hashes
-- Unix timestamps
+Raw order-filled events: maker/taker addresses, asset IDs, fill amounts, tx hashes, timestamps.
 
 **Fields**: `timestamp`, `maker`, `makerAssetId`, `makerAmountFilled`, `taker`, `takerAssetId`, `takerAmountFilled`, `transactionHash`
 
 ### processed/trades.csv
-Structured trade data including:
-- Market ID mapping and trade direction
-- Price, USD amount, and token amount
-- Maker/taker roles and transaction details
+Structured trades: market mapping, BUY/SELL direction, price in USDC, amounts.
 
 **Fields**: `timestamp`, `market_id`, `maker`, `taker`, `nonusdc_side`, `maker_direction`, `taker_direction`, `price`, `usd_amount`, `token_amount`, `transactionHash`
 
-## Pipeline Stages
+## Trade semantics
 
-### 1. Update Markets (`update_markets.py`)
-
-Fetches all markets from Polymarket API in chronological order.
-
-**Features**:
-- Automatic resume from last offset (idempotent)
-- Rate limiting and error handling
-- Batch fetching (500 markets per request)
-
-**Usage**:
-```bash
-uv run python -c "from update_utils.update_markets import update_markets; update_markets()"
-```
-
-### 2. Update Goldsky (`update_goldsky.py`)
-
-Scrapes order-filled events from Goldsky subgraph API.
-
-**Features**:
-- Resumes from last timestamp automatically
-- Handles GraphQL queries with pagination
-- Deduplicates events
-
-**Usage**:
-```bash
-uv run python -c "from update_utils.update_goldsky import update_goldsky; update_goldsky()"
-```
-
-### 3. Process Live Trades (`process_live.py`)
-
-Processes raw order events into structured trades.
-
-**Features**:
-- Maps asset IDs to markets using token lookup
-- Calculates prices and trade directions
-- Identifies BUY/SELL sides
-- Handles missing markets by discovering them from trades
-- Incremental processing from last checkpoint
-
-**Usage**:
-```bash
-uv run python -c "from update_utils.process_live import process_live; process_live()"
-```
-
-**Processing Logic**:
-- Identifies non-USDC asset in each trade
-- Maps to market and outcome token (token1/token2)
-- Determines maker/taker directions (BUY/SELL)
-- Calculates price as USDC amount per outcome token
-- Converts amounts from raw units (divides by 10^6)
-
-## Dependencies
-
-Dependencies are managed via `pyproject.toml` and installed automatically with `uv sync`.
-
-**Key Libraries**:
-- `polars` - Fast DataFrame operations
-- `pandas` - Data manipulation
-- `gql` - GraphQL client for Goldsky
-- `requests` - HTTP requests to Polymarket API
-- `flatten-json` - JSON flattening for nested responses
-
-**Development Dependencies** (optional, installed with `--extra dev`):
-- `jupyter` - Interactive notebooks
-- `notebook` - Jupyter notebook interface
-- `ipykernel` - Python kernel for Jupyter
-
-## Features
-
-### Resumable Operations
-All stages automatically resume from where they left off:
-- **Markets**: Counts existing CSV rows to set offset
-- **Goldsky**: Reads last timestamp from orderFilled.csv
-- **Processing**: Finds last processed transaction hash
-
-### Error Handling
-- Automatic retries on network failures
-- Rate limit detection and backoff
-- Server error (500) handling
-- Graceful fallbacks for missing data
-
-### Missing Market Discovery
-The processing stage automatically discovers markets that weren't in the initial markets.csv (e.g., markets created after last update) and fetches them via the Polymarket API, saving to `missing_markets.csv`.
-
-## Data Schema Details
-
-### Trade Direction Logic
-- **Taker Direction**: BUY if paying USDC, SELL if receiving USDC
-- **Maker Direction**: Opposite of taker direction
-- **Price**: Always expressed as USDC per outcome token
-
-### Asset Mapping
-- `makerAssetId`/`takerAssetId` of "0" represents USDC
-- Non-zero IDs are outcome token IDs (token1/token2 from markets)
-- Each trade involves USDC and one outcome token
-
-## Notes
-
-- All amounts are normalized to standard decimal format (divided by 10^6)
-- Timestamps are converted from Unix epoch to datetime
-- Platform wallets (`0xc5d563a36ae78145c45a50134d48a1215220f80a`, `0x4bfb41d5b3570defd03c39a9a4d8de6bd8b8982e`) are tracked in `poly_utils/utils.py`
-- Negative risk markets are flagged in the market data
-
-## Troubleshooting
-
-**Issue**: Markets not found during processing
-**Solution**: Run `update_markets()` first, or let `process_live()` auto-discover them
-
-**Issue**: Duplicate trades
-**Solution**: Deduplication is automatic - re-run processing from scratch if needed
-
-**Issue**: Rate limiting
-**Solution**: The pipeline handles this automatically with exponential backoff
+- Each fill pairs USDC (assetId `"0"`) with one outcome token.
+- Raw amounts are 10⁶-scaled — divide before use.
+- **Taker**: BUY if pays USDC, SELL if receives USDC. **Maker**: opposite.
+- Filter on `maker` column to get a user's complete trade history (contract events are emitted from maker perspective).
 
 ## Analysis
 
-### Loading Data
-
 ```python
-import pandas as pd
 import polars as pl
 from poly_utils import get_markets, PLATFORM_WALLETS
 
-# Load markets
 markets_df = get_markets()
 
-# Load trades
 df = pl.scan_csv("processed/trades.csv").collect(streaming=True)
-df = df.with_columns(
-    pl.col("timestamp").str.to_datetime().alias("timestamp")
-)
-```
+df = df.with_columns(pl.col("timestamp").str.to_datetime())
 
-### Filtering Trades by User
-
-**Important**: When filtering for a specific user's trades, filter by the `maker` column. Even though it appears you're only getting trades where the user is the maker, this is how Polymarket generates events at the contract level. The `maker` column shows trades from that user's perspective including price.
-
-```python
-USERS = {
-    'domah': '0x9d84ce0306f8551e02efef1680475fc0f1dc1344',
-    '50pence': '0x3cf3e8d5427aed066a7a5926980600f6c3cf87b3',
-    'fhantom': '0x6356fb47642a028bc09df92023c35a21a0b41885',
-    'car': '0x7c3db723f1d4d8cb9c550095203b686cb11e5c6b',
-    'theo4': '0x56687bf447db6ffa42ffe2204a05edaa20f55839'
-}
-
-# Get all trades for a specific user
-trader_df = df.filter((pl.col("maker") == USERS['domah']))
+# All trades for a specific wallet
+my_trades = df.filter(pl.col("maker") == "0xYOUR_SAFE_ADDRESS")
 ```
 
 ## License
