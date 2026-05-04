@@ -122,7 +122,7 @@ nohup ./dashboard/supervise_weather.sh > dashboard/runtime/supervisor_weather.lo
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # 2. Clone and install deps (with dashboard extras)
-git clone https://github.com/kevinbadi/polymarket-weather-quant.git ~/polymarket-weather-quant
+git clone https://github.com/vip0123/polymarket-weather-quant.git ~/polymarket-weather-quant
 cd ~/polymarket-weather-quant
 ~/.local/bin/uv sync --extra dashboard
 
