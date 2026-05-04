@@ -111,9 +111,53 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
 .\dashboard\supervise_weather.ps1
 ```
 
-**Linux/macOS:**
+**Linux/macOS (background shell loop):**
 ```bash
 nohup ./dashboard/supervise_weather.sh > dashboard/runtime/supervisor_weather.log 2>&1 &
+```
+
+**Linux (systemd user service — recommended for servers):**
+```bash
+# 1. Install UV
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# 2. Clone and install deps (with dashboard extras)
+git clone https://github.com/kevinbadi/polymarket-weather-quant.git ~/polymarket-weather-quant
+cd ~/polymarket-weather-quant
+~/.local/bin/uv sync --extra dashboard
+
+# 3. Copy your .env from local machine
+# From Windows: scp .env user@server:~/polymarket-weather-quant/.env
+# From Linux:   scp .env user@server:~/polymarket-weather-quant/.env
+
+# 4. Seed runtime configs
+mkdir -p dashboard/runtime
+cp dashboard/runtime_examples/weather_trader_config.example.json dashboard/runtime/weather_trader_config.json
+
+# 5. Create the systemd user service
+mkdir -p ~/.config/systemd/user
+cat > ~/.config/systemd/user/weather-trader.service << 'EOF'
+[Unit]
+Description=Polymarket Weather Trader
+After=network-online.target
+
+[Service]
+WorkingDirectory=/home/YOUR_USER/polymarket-weather-quant
+ExecStart=/home/YOUR_USER/.local/bin/uv run python -m weather.trader
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target
+EOF
+
+# Replace YOUR_USER with your actual username, then:
+systemctl --user daemon-reload
+systemctl --user enable weather-trader
+systemctl --user start weather-trader
+
+# 6. Enable linger so it survives logout/reboot (requires sudo once)
+sudo loginctl enable-linger $USER
 ```
 
 ## Data Pipeline
@@ -222,8 +266,6 @@ with httpx.Client(proxy=proxy, timeout=15) as hc:
 
 ## Data files
 
-## Data files
-
 ### markets.csv
 Market metadata: question, outcomes, tokens, close time, volume, condition ID, neg_risk flag.
 
@@ -264,3 +306,79 @@ my_trades = df.filter(pl.col("maker") == "0xYOUR_SAFE_ADDRESS")
 ## License
 
 Go wild with it
+
+## Monitoring (Ubuntu server)
+
+All commands run on `192.168.1.100` as user `polymarket`.
+
+### Check if the trader is running
+
+```bash
+ssh polymarket@192.168.1.100 "systemctl --user status weather-trader --no-pager"
+```
+
+Expected: `Active: active (running)` with the trader PID visible.
+
+### Watch live logs
+
+```bash
+ssh polymarket@192.168.1.100 "journalctl --user -u weather-trader -f"
+```
+
+Log lines to watch for:
+- `INFO weather trader up.` — startup
+- `[REFRESH] running weather.dump` — forecast data refresh (every 10 min)
+- `[SCAN]` — scanning markets for edge
+- `BUY` — order placed
+- `ERROR` or `Traceback` — crash (service auto-restarts in 3 s)
+
+### Check current state (open positions, last heartbeat)
+
+```bash
+ssh polymarket@192.168.1.100 "cat ~/polymarket-weather-quant/dashboard/runtime/weather_trader_state.json"
+```
+
+### Check trade history
+
+```bash
+ssh polymarket@192.168.1.100 "tail -20 ~/polymarket-weather-quant/dashboard/runtime/weather_trader_trades.csv"
+```
+
+### Pause trading without stopping the process
+
+```bash
+# Edit config: set "enabled": false
+ssh polymarket@192.168.1.100 "python3 -c \"
+import json, pathlib
+p = pathlib.Path('polymarket-weather-quant/dashboard/runtime/weather_trader_config.json')
+c = json.loads(p.read_text()); c['enabled'] = False; p.write_text(json.dumps(c, indent=2))
+print('Trading disabled — trader will stop opening new positions')
+\""
+```
+
+### Stop / restart the service
+
+```bash
+# Stop
+ssh polymarket@192.168.1.100 "systemctl --user stop weather-trader"
+
+# Restart (e.g. after pulling a code update)
+ssh polymarket@192.168.1.100 "systemctl --user restart weather-trader"
+```
+
+### Pull code updates and restart
+
+```bash
+ssh polymarket@192.168.1.100 "cd ~/polymarket-weather-quant && git pull && ~/.local/bin/uv sync --extra dashboard && systemctl --user restart weather-trader"
+```
+
+### Check portfolio on-chain
+
+```bash
+ssh polymarket@192.168.1.100 "cd ~/polymarket-weather-quant && ~/.local/bin/uv run python check_portfolio.py"
+```
+
+> **Note**: the trader runs on both Windows (PowerShell supervisor) and Linux (systemd) with separate state files. Both can run simultaneously against the same wallet — but if the same market is scanned from both machines within the same cycle, a duplicate position could open. Stop one instance once the other is confirmed working.
+
+
+

@@ -42,5 +42,4 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["poly_utils", "update_utils"]
 
-[tool.uv]
-dev-dependencies = []
+
