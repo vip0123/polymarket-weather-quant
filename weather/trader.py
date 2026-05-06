@@ -185,6 +185,12 @@ def decide_side(row: dict, edge_threshold: float,
     if (our - mkt) > 0:
         return ("YES", our_adj, tokens[0])
     else:
+        # Market-consensus guard: don't fade a market where Yes is >72% confident.
+        # No token priced below ~28¢ means strong crowd agreement — model rarely has
+        # edge here on weather bets. Both confirmed losses (Seoul 18°C, London 14°C)
+        # had No tokens at 10-17¢ (Yes >83%). This is the #2 loss-prevention filter.
+        if mkt > 0.72:
+            return None
         return ("NO", 1.0 - our_adj, tokens[1])
 
 
@@ -414,6 +420,16 @@ def main():
     log.info("weather trader up. funder=%s", os.environ.get("POLY_FUNDER"))
 
     fired: dict[str, float] = {}  # (cid, side) -> entered_at
+    # Restore fired positions from previous run (survives crashes/restarts).
+    # Prevents the bot from re-buying a position it already entered this session.
+    _prev = load_json(STATE_FILE, {})
+    for _fk, _ft in _prev.get("fired_positions", {}).items():
+        if isinstance(_ft, (int, float)) and time.time() - _ft < 6 * 3600:
+            parts = _fk.split("|", 1)
+            if len(parts) == 2:
+                fired[tuple(parts)] = _ft
+    if fired:
+        log.info("[RESTORE] %d fired position(s) restored from previous run", len(fired))
     last_watchlist_refresh = 0.0
     live_orders: dict[str, dict] = {}  # order_id → {market, side, ask, size_usd, posted_at}
     last_refresh = 0.0
@@ -470,6 +486,7 @@ def main():
             "running": True, "enabled": enabled, "dry_run": dry,
             "last_heartbeat": datetime.now(timezone.utc).isoformat(),
             "edge_rows": len(rows), "open_positions": len(fired),
+            "fired_positions": {f"{k[0]}|{k[1]}": v for k, v in fired.items()},
         })
 
         if not rows:
