@@ -183,11 +183,11 @@ def decide_side(row: dict, edge_threshold: float,
 
     tokens = json.loads(row["tokens"])
     if (our - mkt) > 0:
-        # Symmetric guard: don't fire YES when crowd already says <28% (Yes price <0.28).
-        # Mirror of the NO guard — if the market is highly confident in NO, our model
-        # rarely has edge to fade that consensus on weather bets.
-        if mkt < 0.28:
-            return None
+        # NOTE: no symmetric YES-side consensus guard. PLAYBOOK Rule 8 confirms
+        # YES bucket bets at low market prices CAN win when forecast is
+        # dead-center with multi-model agreement (London 16°C YES +$193).
+        # The min_ask floor (config) and cushion gate (downstream) provide
+        # adequate protection without blocking legitimate high-edge YES setups.
         return ("YES", our_adj, tokens[0])
     else:
         # Market-consensus guard: don't fade a market where Yes is >72% confident.
