@@ -183,6 +183,11 @@ def decide_side(row: dict, edge_threshold: float,
 
     tokens = json.loads(row["tokens"])
     if (our - mkt) > 0:
+        # Symmetric guard: don't fire YES when crowd already says <28% (Yes price <0.28).
+        # Mirror of the NO guard — if the market is highly confident in NO, our model
+        # rarely has edge to fade that consensus on weather bets.
+        if mkt < 0.28:
+            return None
         return ("YES", our_adj, tokens[0])
     else:
         # Market-consensus guard: don't fade a market where Yes is >72% confident.
@@ -482,6 +487,10 @@ def main():
         min_ask = float(cfg.get("min_ask", 0.02))
 
         rows = load_edges(EDGE_CSV)
+        # Sort by target_date ascending so today-resolving markets are scanned first
+        # (PLAYBOOK Rule 4: same-day = fastest capital recycle, highest win rate).
+        # If max_open cap is hit, we want it filled with today's bets, not day+1.
+        rows.sort(key=lambda r: (r.get("target_date") or "9999-99-99"))
         save_json(STATE_FILE, {
             "running": True, "enabled": enabled, "dry_run": dry,
             "last_heartbeat": datetime.now(timezone.utc).isoformat(),
